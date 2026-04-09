@@ -13,6 +13,7 @@ const {
   Routes,
   SlashCommandBuilder
 } = require('discord.js');
+
 const axios = require('axios');
 const fs = require('fs');
 const https = require('https');
@@ -33,55 +34,38 @@ function saveSlots() { fs.writeFileSync(SLOTS_FILE, JSON.stringify(slots, null, 
 
 // ===== COMMANDS =====
 const commands = [
-  new SlashCommandBuilder()
-    .setName('panel')
-    .setDescription('Open panel'),
-
+  new SlashCommandBuilder().setName('panel').setDescription('Open panel'),
   new SlashCommandBuilder()
     .setName('givecredits')
     .setDescription('Give credits to a user')
-    .addUserOption(opt =>
-      opt.setName('user')
-        .setDescription('User to give credits to')
-        .setRequired(true)
-    )
-    .addIntegerOption(opt =>
-      opt.setName('amount')
-        .setDescription('Amount of credits')
-        .setRequired(true)
-    )
+    .addUserOption(opt => opt.setName('user').setDescription('User to give credits to').setRequired(true))
+    .addIntegerOption(opt => opt.setName('amount').setDescription('Amount of credits').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('credits')
+    .setDescription('Check a user\'s credits (Admin)')
+    .addUserOption(opt => opt.setName('user').setDescription('User to check').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('removeslot')
+    .setDescription('Remove a user\'s active slot (Admin)')
+    .addUserOption(opt => opt.setName('user').setDescription('User whose slot to remove').setRequired(true))
 ].map(c => c.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(process.env.BOT_TOKEN);
 
 async function registerCommands() {
-  await rest.put(
-    Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
-    { body: commands }
-  );
+  await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID), { body: commands });
   console.log('✅ Commands registered');
 }
 
 // ===== LUARMOR KEY GENERATOR =====
 async function createLuarmorKey(hours, discordId) {
   const expiryUnix = Math.floor(Date.now() / 1000) + hours * 3600;
-
   try {
     const res = await axios.post(
       `https://api.luarmor.net/v3/projects/${process.env.LUARMOR_PROJECT_ID}/users`,
-      {
-        discord_id: discordId,
-        auth_expire: expiryUnix
-      },
-      {
-        headers: {
-          Authorization: process.env.LUARMOR_API_KEY,
-          'Content-Type': 'application/json'
-        }
-      }
+      { discord_id: discordId, auth_expire: expiryUnix },
+      { headers: { Authorization: process.env.LUARMOR_API_KEY, 'Content-Type': 'application/json' } }
     );
-
-    console.log('✅ Luarmor response:', JSON.stringify(res.data, null, 2));
 
     const findKey = obj => {
       if (typeof obj === 'string' && /^[A-Za-z0-9]{6,}$/.test(obj)) return obj;
@@ -95,14 +79,11 @@ async function createLuarmorKey(hours, discordId) {
     };
 
     const key = findKey(res.data);
-    if (!key) throw new Error(`No key found: ${JSON.stringify(res.data)}`);
-
-    return { key, expiry: expiryUnix * 1000 }; // expiry in ms
-
+    if (!key) throw new Error('No key found in response');
+    return { key, expiry: expiryUnix * 1000 };
   } catch (err) {
-    const errorData = err.response?.data || err.message;
-    console.error('❌ Luarmor FULL error:', errorData);
-    throw new Error(typeof errorData === 'string' ? errorData : JSON.stringify(errorData, null, 2));
+    console.error('❌ Luarmor error:', err.response?.data || err.message);
+    throw err;
   }
 }
 
@@ -114,10 +95,7 @@ function formatTime(ms) {
 
 // ===== SLOTS EMBED =====
 function generateSlotsEmbed() {
-  const embed = new EmbedBuilder()
-    .setTitle('🎟️ Global Slots')
-    .setColor(0x0099ff);
-
+  const embed = new EmbedBuilder().setTitle('🎟️ Global Slots').setColor(0x0099ff);
   const now = Date.now();
   const activeSlots = slots.filter(s => s && s.expiry > now).sort((a, b) => a.expiry - b.expiry);
 
@@ -130,26 +108,21 @@ function generateSlotsEmbed() {
         value: `🔴 Taken by ${user ? user.tag : 'Unknown'}\nExpires in: ${formatTime(slot.expiry - now)}`
       });
     } else {
-      embed.addFields({
-        name: `Slot ${i + 1}`,
-        value: '🟢 Available'
-      });
+      embed.addFields({ name: `Slot ${i + 1}`, value: '🟢 Available' });
     }
   }
-
   return embed;
 }
 
 // ===== COMMAND HANDLER =====
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
+  const isAdmin = process.env.ADMIN_IDS.split(',').includes(interaction.user.id);
 
-  if (interaction.commandName === 'panel' &&
-      process.env.ADMIN_IDS.split(',').includes(interaction.user.id)) {
-
+  if (interaction.commandName === 'panel' && isAdmin) {
     const embed = new EmbedBuilder()
       .setTitle('🔑 Slot System')
-      .setDescription('1 Credit = 2 Hours\nMax 6 Global Slots')
+      .setDescription('**1 Credit = 1 Hour ($2)**\nMax 6 Global Slots')
       .setColor(0x00ff00);
 
     const row = new ActionRowBuilder().addComponents(
@@ -162,28 +135,44 @@ client.on('interactionCreate', async interaction => {
     await interaction.reply({ embeds: [embed, generateSlotsEmbed()], components: [row] });
   }
 
-  if (interaction.commandName === 'givecredits' &&
-      process.env.ADMIN_IDS.split(',').includes(interaction.user.id)) {
-
+  if (interaction.commandName === 'givecredits' && isAdmin) {
     const target = interaction.options.getUser('user');
     const amount = interaction.options.getInteger('amount');
-
     if (!users[target.id]) users[target.id] = { credits: 0, processed: [], btc: null, ltc: null };
     users[target.id].credits += amount;
     saveUsers();
-
     await interaction.reply(`✅ Gave **${amount} credits** to ${target.tag}`);
+  }
+
+  if (interaction.commandName === 'credits' && isAdmin) {
+    const target = interaction.options.getUser('user');
+    const userData = users[target.id] || { credits: 0 };
+    await interaction.reply({ content: `**${target.tag}** has **${userData.credits} credits**`, ephemeral: true });
+  }
+
+  if (interaction.commandName === 'removeslot' && isAdmin) {
+    const target = interaction.options.getUser('user');
+    const before = slots.length;
+    slots = slots.filter(s => !(s.userId === target.id && s.expiry > Date.now()));
+
+    if (slots.length < before) {
+      saveSlots();
+      await interaction.reply(`✅ Successfully removed **${target.tag}**'s active slot.`);
+    } else {
+      await interaction.reply({ content: `❌ ${target.tag} does not have an active slot.`, ephemeral: true });
+    }
   }
 });
 
 // ===== BUTTON HANDLER =====
 client.on('interactionCreate', async interaction => {
   if (!interaction.isButton()) return;
+
   const userId = interaction.user.id;
   if (!users[userId]) users[userId] = { credits: 0, processed: [], btc: null, ltc: null };
 
   if (interaction.customId === 'get_credits') {
-    return interaction.reply({ content: `💰 You have ${users[userId].credits} credits`, ephemeral: true });
+    return interaction.reply({ content: `💰 You have **${users[userId].credits} credits**`, ephemeral: true });
   }
 
   if (interaction.customId === 'activate_slot') {
@@ -198,7 +187,7 @@ client.on('interactionCreate', async interaction => {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId('credits_amount')
-          .setLabel('Credits to spend')
+          .setLabel('Credits to spend (1 credit = 1 hour)')
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
       )
@@ -222,10 +211,9 @@ client.on('interactionCreate', async interaction => {
       saveUsers();
 
       return interaction.reply({
-        content: `💳 Send crypto to get credits automatically:\nBTC: ${users[userId].btc}\nLTC: ${users[userId].ltc}`,
+        content: `💳 Send crypto to get credits automatically:\n**BTC:** ${users[userId].btc}\n**LTC:** ${users[userId].ltc}`,
         ephemeral: true
       });
-
     } catch (err) {
       return interaction.reply({ content: `❌ Failed to generate wallets\n${err.message}`, ephemeral: true });
     }
@@ -245,35 +233,29 @@ client.on('interactionCreate', async interaction => {
   if (slots.filter(s => s && s.expiry > Date.now()).length >= MAX_SLOTS)
     return interaction.reply({ content: '❌ All slots full', ephemeral: true });
 
-  const hours = creditsToSpend * 2;
+  const hours = creditsToSpend;
 
   try {
-    // ✅ Generate a fresh key with discord_id so Luarmor expiry works
     const { key, expiry } = await createLuarmorKey(hours, interaction.user.id);
 
-    // Find existing slot for this user (one slot per user)
     const existingSlotIndex = slots.findIndex(s => s.userId === interaction.user.id && s.expiry > Date.now());
+
     if (existingSlotIndex !== -1) {
-      slots[existingSlotIndex] = { userId: interaction.user.id, key, expiry }; // replace existing
+      slots[existingSlotIndex] = { userId: interaction.user.id, key, expiry };
     } else {
       slots.push({ userId: interaction.user.id, key, expiry });
     }
 
     userData.credits -= creditsToSpend;
-
     saveUsers();
     saveSlots();
 
     return interaction.reply({
-      content: `✅ Slot activated!\nKey: ${key}\nExpires in: ${formatTime(expiry - Date.now())}`,
+      content: `✅ Slot activated!\n**Key:** ${key}\n**Expires in:** ${formatTime(expiry - Date.now())}`,
       ephemeral: true
     });
-
   } catch (err) {
-    return interaction.reply({
-      content: `❌ Luarmor Error:\n\`\`\`json\n${err.message.slice(0, 1800)}\n\`\`\``,
-      ephemeral: true
-    });
+    return interaction.reply({ content: `❌ Luarmor Error:\n${err.message}`, ephemeral: true });
   }
 });
 
@@ -301,7 +283,7 @@ setInterval(async () => {
             console.log(`💰 Added ${credits} credits to ${id}`);
           }
         }
-      } catch {}
+      } catch (e) {}
     }
   }
   saveUsers();
@@ -310,13 +292,20 @@ setInterval(async () => {
 // ===== READY =====
 client.once('ready', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
-  await registerCommands();
 
   https.get('https://api.ipify.org?format=json', res => {
     let data = '';
     res.on('data', chunk => data += chunk);
-    res.on('end', () => { try { console.log('Outbound IP:', JSON.parse(data).ip); } catch {} });
+    res.on('end', () => {
+      try {
+        console.log(`🌐 Outbound IP: ${JSON.parse(data).ip}`);
+      } catch (e) {
+        console.log('⚠️ Could not fetch outbound IP');
+      }
+    });
   });
+
+  await registerCommands();
 });
 
 client.login(process.env.BOT_TOKEN);
